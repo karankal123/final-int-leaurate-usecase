@@ -1,0 +1,7 @@
+.vscode
+node_modules
+.env
+.deployment
+src/data/jobs.db
+src/data/jobs.db-shm
+src/data/jobs.db-wal

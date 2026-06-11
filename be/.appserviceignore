@@ -1,0 +1,12 @@
+# Runtime-generated SQLite database files — never deploy these.
+# They cause rsync failures on Azure App Service because the target
+# directory may not exist yet when Oryx tries to place them.
+src/data/jobs.db
+src/data/jobs.db-shm
+src/data/jobs.db-wal
+
+# Dev tooling
+.vscode
+node_modules
+.env
+.deployment

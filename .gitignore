@@ -1,0 +1,149 @@
+# =========================
+# Environment Files
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual Environments
+venv/
+.venv/
+ENV/
+env/
+venv-document/venv/
+
+# Python Cache
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Python Build
+build/
+dist/
+*.egg-info/
+
+# Python Secrets
+token.json
+client_secret*.json
+credentials.json
+
+# =========================
+# Node.js
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Backend Node Modules
+be/node_modules/
+
+# Frontend Node Modules
+fe/node_modules/
+
+# =========================
+# React / Vite
+# =========================
+fe/dist/
+fe/.vite/
+fe/coverage/
+
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# OS Files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Azure
+# =========================
+.azure/
+deployment/.azure/
+
+# =========================
+# Runtime Files
+# =========================
+*.pid
+*.seed
+*.lock
+
+# =========================
+# Database
+# =========================
+*.db
+*.sqlite3
+
+# =========================
+# ML / AI Models
+# =========================
+models/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.onnx
+*.pkl
+*.joblib
+
+# =========================
+# Vector Databases
+# =========================
+chroma_db/
+chromadb/
+vector_db/
+vectordb/
+faiss_index/
+faiss_db/
+
+# =========================
+# Uploads / Generated Files
+# =========================
+uploads/
+output/
+outputs/
+artifacts/
+reports/
+
+# =========================
+# Temporary Files
+# =========================
+*.tmp
+*.temp
+*.bak
+
+# =========================
+# Coverage Reports
+# =========================
+coverage/
+htmlcov/
+
+# =========================
+# Terraform
+# =========================
+.terraform/
+*.tfstate
+*.tfstate.*
