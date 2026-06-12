@@ -110,7 +110,13 @@ function ApplicantsTable({ cases, onOpenScreen, onOpenView, onRename, renameLoad
           <tbody>
             {cases.map((c, i) => {
               const as = c.application_status?.toLowerCase() || '';
-              const isDone = ['process', 'selected', 'rejected', 'waitlisted', 'incomplete application'].includes(as);
+              
+              const ss = c.screening_status?.toLowerCase() || '';
+              const isDone =
+              ss === 'completed' ||
+              ['process', 'selected', 'rejected', 'waitlisted', 'incomplete application'].includes(as);
+ 
+              //const isDone = ['selected', 'rejected', 'waitlisted', 'incomplete application'].includes(as);
               const isRenaming = renameLoadingId === c.student_id;
               const isRenamed = renamedIds?.has(c.student_id);
               return (
@@ -231,23 +237,13 @@ export default function InboxPage() {
   }, []);
 
   // Partition: HITL reviews (off-platform) vs regular workflow applicants.
-  const { hitlCases, applicantCases } = useMemo(() => {
-    const hitl = [];
-    const applicants = [];
-    for (const c of cases) {
-      if (c.is_off_platform_review || c.thread_id) {
-        hitl.push(c);
-      } else {
-        applicants.push(c);
-      }
-    }
-    return { hitlCases: hitl, applicantCases: applicants };
-  }, [cases]);
+  
+  const applicantCases = useMemo(() => cases, [cases]);
 
   // HITL cases use the same case detail page as regular workflow cases —
   // the evaluation results and the human-review action box render on one
   // page (matches Karan's UX requirement: results first, action at bottom).
-  const openHitl = (c) => navigate(`/case/${c.student_id}`, { state: { mode: 'view' } });
+  // const openHitl = (c) => navigate(`/case/${c.student_id}`, { state: { mode: 'view' } });
   const openScreen = (c) => navigate(`/case/${c.student_id}`, { state: { mode: 'screen' } });
   const openView = (c) => navigate(`/case/${c.student_id}`, { state: { mode: 'view' } });
 
@@ -322,22 +318,7 @@ export default function InboxPage() {
         {!loading && !error && (
           <>
             {/* Section 1: Pending Human Reviews — distinct amber theme, always visible */}
-            <section>
-              <div className="flex items-baseline justify-between mb-3 flex-wrap gap-2">
-                <div className="flex items-baseline gap-3">
-                  <h2 className="text-lg font-bold text-[#92400e]">
-                    Pending Human Reviews
-                  </h2>
-                  <span className="text-xs font-semibold bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full border border-amber-300">
-                    {hitlCases.length}
-                  </span>
-                </div>
-                <p className="text-xs text-[#64748B]">
-                  Off-platform review tasks dispatched by OPUS workflows
-                </p>
-              </div>
-              <HitlReviewsTable cases={hitlCases} onOpen={openHitl} />
-            </section>
+            
 
             {/* Section 2: Regular workflow applicants */}
             <section>

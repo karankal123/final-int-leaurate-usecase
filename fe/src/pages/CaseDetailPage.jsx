@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   getCaseScreening,
@@ -100,6 +100,7 @@ export default function CaseDetailPage() {
   const [renameLoading, setRenameLoading] = useState(false);
   const [renameResult, setRenameResult] = useState(null);
   const [renameError, setRenameError] = useState(null);
+  const humanDecisionSubmitted = useRef(false);
 
   const isFinalizedStatus = useCallback((value) => {
     const status = String(value || '').toLowerCase();
@@ -111,7 +112,6 @@ export default function CaseDetailPage() {
       setAuditTrail([]);
       return;
     }
-
     try {
       const audit = await getJobAudit(threadId);
       setAuditTrail(audit || []);
@@ -143,17 +143,32 @@ export default function CaseDetailPage() {
         await loadJobAudit(incomingScreening.thread_id);
       }
 
-      if (!hasHumanActions && isFinalizedStatus(incomingCaseInfo?.application_status || incomingScreening?.decision)) {
+      // getCaseScreening payload does not carry case_info, so incomingCaseInfo
+      // is often null. Fall back through available fields to find a status value.
+      const resolvedAppStatus =
+        incomingCaseInfo?.application_status ||
+        incomingScreening?.application_status ||
+        incomingScreening?.decision;
+
+      const alreadyFinalized = isFinalizedStatus(resolvedAppStatus);
+
+      if (!hasHumanActions && alreadyFinalized) {
+        // Case is done — show the final banner.
         setFinalResult({
           decision: incomingScreening.decision,
-          application_status: incomingCaseInfo?.application_status || incomingScreening.decision,
+          application_status: resolvedAppStatus,
           case_status: incomingScreening.case_status,
           thread_id: incomingScreening.thread_id,
           student_id: incomingScreening.student_id,
         });
-      } else if (hasHumanActions) {
-        setFinalResult(null);
       } else if (processing) {
+        // Actively running — clear any stale final banner.
+        setFinalResult(null);
+      } else if (hasHumanActions && !humanDecisionSubmitted.current && !alreadyFinalized) {
+        // Genuinely awaiting human input and not yet decided — clear banner so
+        // HumanReviewPanel shows. Do NOT clear if alreadyFinalized — a stale
+        // available_actions from the backend must not undo a completed decision
+        // when viewing a finished case.
         setFinalResult(null);
       }
     }
@@ -165,14 +180,36 @@ export default function CaseDetailPage() {
       setLoadingCase(true);
       setCaseError(null);
       setScreeningError(null);
+
+      // Single fetch — one Promise.all, one screeningPayload reference used
+      // throughout init(). No duplicate call, no shadowed variable.
+      let caseData;
+      let screeningPayload;
       try {
-        const [caseData, screeningPayload] = await Promise.all([
+        [caseData, screeningPayload] = await Promise.all([
           getCaseStatus(studentId),
           getCaseScreening(studentId).catch(() => null),
         ]);
 
         setCaseInfo(caseData);
         await hydrateFromPayload(screeningPayload);
+
+        // Set finalResult for any already-completed/finalized case.
+        // This runs for BOTH view and screen mode — the early return below
+        // for view mode comes AFTER this block so view mode always gets it.
+        const sr = screeningPayload?.screening_result;
+        const actionsEmpty = !Array.isArray(sr?.available_actions) || sr.available_actions.length === 0;
+        const isCompleted = String(sr?.job_status || '').toUpperCase() === 'COMPLETED';
+        const isFinalized = isFinalizedStatus(sr?.decision || caseData?.application_status);
+        if (sr && actionsEmpty && (isCompleted || isFinalized) && !sr.is_processing) {
+          setFinalResult({
+            decision: sr.decision,
+            application_status: caseData?.application_status || sr.decision,
+            case_status: sr.case_status,
+            thread_id: sr.thread_id,
+            student_id: sr.student_id,
+          });
+        }
       } catch (err) {
         setCaseError(err?.response?.data?.detail || err.message || 'Failed to load case.');
         setLoadingCase(false);
@@ -180,17 +217,26 @@ export default function CaseDetailPage() {
       }
       setLoadingCase(false);
 
+      // view mode (or undefined): data already loaded and finalResult already
+      // set above — nothing more to do.
       if (mode !== 'screen') {
         return;
       }
 
+      // screen mode: guard against re-triggering an already active/done job.
+      // Reuse screeningPayload already fetched above — no second network call.
       const currentScreening = screeningPayload?.screening_result;
       const hasExistingThread = Boolean(currentScreening?.thread_id);
       const hasExistingActions = Array.isArray(currentScreening?.available_actions) && currentScreening.available_actions.length > 0;
       const isAlreadyRunning = Boolean(currentScreening?.is_processing);
-      const hasExistingDecision = Boolean(currentScreening?.decision);
+      const isAlreadyCompleted = String(currentScreening?.job_status || '').toUpperCase() === 'COMPLETED';
+      const isFinalizedDecisionState = isFinalizedStatus(currentScreening?.decision);
+      if (hasExistingThread && (hasExistingActions || isAlreadyRunning || isAlreadyCompleted || isFinalizedDecisionState)) {
+        return;
+      }
 
-      if (hasExistingThread && (hasExistingActions || isAlreadyRunning || hasExistingDecision)) {
+      // Only skip auto-trigger if actively processing right now.
+      if (isAlreadyRunning) {
         return;
       }
 
@@ -288,6 +334,7 @@ export default function CaseDetailPage() {
           : prev
       );
       setFinalResult(result);
+      humanDecisionSubmitted.current = true;
     } catch (err) {
       // BE returns 502 with { opus_status, opus_body, sent_body } when OPUS
       // accepted the receipt but rejected the callback body. Surface that
@@ -427,8 +474,8 @@ export default function CaseDetailPage() {
                   <p className="text-xs font-semibold text-[#6B7280] uppercase tracking-widest mb-2">
                     Attached Documents
                   </p>
-                  <AttachmentChipsComponent 
-                    attachmentUrls={parseAttachmentString(caseInfo.attachments)} 
+                  <AttachmentChipsComponent
+                    attachmentUrls={parseAttachmentString(caseInfo.attachments)}
                     onPreview={handlePreview}
                   />
                 </div>
@@ -657,4 +704,3 @@ function FinalDecisionBanner({ result, onBack, onRerun, loading }) {
     </div>
   );
 }
-

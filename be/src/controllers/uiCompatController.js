@@ -40,7 +40,6 @@ import {
   validateHitlWebhookPayload,
 } from "../services/hitlService.js";
 import { logWarn } from "../utils/logger.js";
-import { mergeWorkflowOutputs } from "../utils/workflowOutputMerger.js";
 import { renameStudentDocuments } from "../services/renameService.js";
 
 const WORKFLOW_ID_PRIMARY = process.env.WORKFLOW_ID_PRIMARY;
@@ -142,6 +141,95 @@ const getRowValue = (row, aliases = []) => {
   }
 
   return "";
+};
+
+const isBlank = (v) =>
+  v === null ||
+  v === undefined ||
+  String(v).trim() === "" ||
+  v === "null" ||
+  v === "undefined";
+
+const firstNonBlank = (obj, ...keys) => {
+  for (const key of keys) {
+    if (!isBlank(obj[key])) return obj[key];
+  }
+  return null;
+};
+
+const UPDATE_CASE_DISPLAY_NAMES = [
+  "decision_up",
+  "case_status_up",
+  "application_status_up",
+  "flagged_verified_up",
+  "final_reason_up",
+  "final_deficiency_list_up",
+  "flagged_verified_agent_up",
+  "case_status_agent_up",
+  "id_proof_check_up",
+  "signature_check_up",
+  "grade_sheets_check_up",
+  "lor_check_up",
+  "work_experience_check_up",
+  "candidate_full_name_up",
+  "work_experience_flag_up",
+  "gpa_flag_up",
+  "lor_date_flag_up",
+  "lor_university_flag_up",
+  "gpa_result_up",
+  "work_experience_result_up",
+  "lor_date_result_up",
+  "lor_university_result_up",
+];
+
+const UPDATE_CASE_DISPLAY_NAME_MAP = new Map(
+  UPDATE_CASE_DISPLAY_NAMES.map((name) => [name.toLowerCase(), name])
+);
+
+const mergeWorkflowOutputs = (raw) => {
+  if (!raw || typeof raw !== "object") return {};
+
+  console.log("mergeWorkflowOutputs raw keys:", Object.keys(raw || {}));
+
+  const fieldMappings = [
+    ["final_decision", ["decision", "final_decision"], "decision_up"],
+    ["case_status", ["Case Status", "case_status"], "case_status_up"],
+    ["application_status", ["application_status"], "application_status_up"],
+    ["flagged_or_verified", ["flagged/verified", "flagged_or_verified"], "flagged_verified_up"],
+    ["final_reason", ["decision of agent", "final_reason", "screening_decision"], "final_reason_up"],
+    ["final_deficiency_list", ["final deficiency list", "final_deficiency_list"], "final_deficiency_list_up"],
+    ["flagged_or_verified_agent", ["flagged/verified(agent's output)", "flagged_or_verified_agent"], "flagged_verified_agent_up"],
+    ["case_status_agent", ["case_status(agent)", "case_status_agent"], "case_status_agent_up"],
+    ["id_proof_check", ["id proof and personal details check", "id_proof_check"], "id_proof_check_up"],
+    ["signature_check", ["signature check", "signature_check"], "signature_check_up"],
+    ["grade_sheets_check", ["grade sheets check", "grade_sheets_check"], "grade_sheets_check_up"],
+    ["lor_check", ["lor check", "lor_check"], "lor_check_up"],
+    ["work_experience_check", ["work experience check", "work_experience_check"], "work_experience_check_up"],
+    ["candidate_full_name", ["Candidate Full Name", "candidate_full_name"], "candidate_full_name_up"],
+    ["work_experience_flag", ["work experience flag", "work_experience_flag"], "work_experience_flag_up"],
+    ["gpa_flag", ["gpa flag", "gpa_flag"], "gpa_flag_up"],
+    ["lor_date_flag", ["lor date flag", "lor_date_flag"], "lor_date_flag_up"],
+    ["lor_university_flag", ["lor university flag", "lor_university_flag"], "lor_university_flag_up"],
+    ["gpa_result", ["gpa result", "gpa_result"], "gpa_result_up"],
+    ["work_experience_result", ["work experience result", "work_experience_result"], "work_experience_result_up"],
+    ["lor_date_result", ["lor date result", "lor_date_result"], "lor_date_result_up"],
+    ["lor_university_result", ["lor university result", "lor_university_result"], "lor_university_result_up"],
+  ];
+
+  const merged = {};
+  for (const [outputKey, newKeys, updateKey] of fieldMappings) {
+    const value = firstNonBlank(
+      raw,
+      ...newKeys,
+      updateKey,
+      `workflow_output_for_${updateKey}`
+    );
+    if (value !== null) {
+      merged[`merged_${outputKey}`] = value;
+    }
+  }
+
+  return merged;
 };
 
 const readApplicantRowsFromExcel = () => {
@@ -330,15 +418,38 @@ const toKeyedResult = (payload = {}) => {
   for (const [key, obj] of Object.entries(schema)) {
     // Store by the workflow_output_* key
     result[key] = obj?.value;
+    const value = obj?.value;
     
     // Also store by display_name so mergeWorkflowOutputs can find it
     if (obj?.display_name) {
-      result[obj.display_name] = obj.value;
+      const displayName = String(obj.display_name).trim();
+      result[displayName] = value;
+
+      const canonicalDisplayName = UPDATE_CASE_DISPLAY_NAME_MAP.get(
+        displayName.toLowerCase()
+      );
+      if (canonicalDisplayName) {
+        result[canonicalDisplayName] = value;
+        if (String(key).startsWith("workflow_output_")) {
+          result[`workflow_output_for_${canonicalDisplayName}`] = value;
+        }
+      }
     }
     
     // Also store by variable_name if different from key
     if (obj?.variable_name && obj.variable_name !== key) {
-      result[obj.variable_name] = obj.value;
+      const variableName = String(obj.variable_name).trim();
+      result[variableName] = value;
+
+      const canonicalVariableName = UPDATE_CASE_DISPLAY_NAME_MAP.get(
+        variableName.toLowerCase()
+      );
+      if (canonicalVariableName) {
+        result[canonicalVariableName] = value;
+        if (String(key).startsWith("workflow_output_")) {
+          result[`workflow_output_for_${canonicalVariableName}`] = value;
+        }
+      }
     }
   }
   
@@ -519,9 +630,13 @@ const deriveReviewFlags = (payload = {}) => {
 const AGENT6_LABEL_MAP = {
   id_proof_and_personal_details_check: "ID and Personal Details",
   signature_check: "Signature",
+  signature_check_result: "Signature",
   grade_sheets_check: "Grade Sheets and Certificates",
+  grade_sheets_check_result: "Grade Sheets and Certificates",
   lor_check: "LOR Documents",
+  lor_check_result: "LOR Documents",
   work_experience_check: "Work Experience",
+  work_experience_check_result: "Work Experience",
 };
 
 /**
@@ -533,6 +648,13 @@ const DOC_SCREENING_LABEL_MAP = {
   work_experience_result: "Work Experience Rule",
   lor_university_result: "LOR Institution Rule",
   lor_date_result: "LOR Recency Rule",
+};
+
+const DOC_SCREENING_FLAG_MAP = {
+  gpa_flag: "GPA Rule",
+  work_experience_flag: "Work Experience Rule",
+  lor_university_flag: "LOR Institution Rule",
+  lor_date_flag: "LOR Recency Rule",
 };
 
 /**
@@ -548,8 +670,28 @@ const AGENT6_SUMMARY_DISPLAY_NAMES = new Set([
 ]);
 
 /** Agent-name substrings used to identify nodes when scanning audit entries. */
-const AGENT6_NAME_TOKENS = ["agent 6", "agent6"];
-const DOC_SCREENING_NAME_TOKENS = ["document screening", "doc screening"];
+const AGENT6_NAME_TOKENS = [
+  "agent 6",
+  "agent6",
+  "update case document complteness check",
+  "update case document completeness check",
+];
+const DOC_SCREENING_NAME_TOKENS = [
+  "document screening",
+  "doc screening",
+  "document screening for update case",
+];
+const AGENT8_NAME_TOKENS = [
+  "agent 8 update",
+  "agent8 update",
+  "agent 8",
+];
+const MERGE_NODE_TOKENS = [
+  "merge",
+  "router",
+  "final output",
+  "combine",
+];
 
 /**
  * Detect explicit fail language in a free-text audit value.
@@ -563,7 +705,6 @@ const isFailSignal = (value = "") => {
     v.includes("below") ||
     v.includes("insufficient") ||
     v.includes("incomplete") ||
-    v.includes("skipped") ||
     v.includes("fail") ||
     v.includes("not found") ||
     v.includes("no usable") ||
@@ -579,9 +720,99 @@ const isFailSignal = (value = "") => {
   );
 };
 
+const isSkipSignal = (value = "") => {
+  const v = String(value).toLowerCase().trim();
+  return (
+    v === "green" ||
+    v === "skipped" ||
+    v.startsWith("skipped") ||
+    v.includes("skipped") ||
+    v.includes("insufficient lors") ||
+    v.includes("previously verified") ||
+    v.includes("already passed")
+  );
+};
+
+// For completeness checks — value is "Present" / "Missing" etc.
 const toUiFlagValue = (value) => {
   const text = String(value || "Not available").trim();
+  if (isSkipSignal(text)) return `${text} —`;
   return `${text} ${isFailSignal(text) ? "✗" : "✓"}`;
+};
+
+// For screening rules — value is literally "Green", "Red", or "Skipped"
+const toScreeningFlagValue = (flagValue) => {
+  const v = String(flagValue || "").toLowerCase().trim();
+  if (v === "green") return "✓";
+  if (v === "red") return "✗";
+  if (v === "skipped") return "—";
+  return "—"; // unknown = yellow
+};
+
+/**
+ * Uses Azure OpenAI to classify each screening rule result text as "green", "red", or "yellow".
+ * green  = passes the rule / meets requirements
+ * red    = fails the rule / does not meet requirements
+ * yellow = skipped / not applicable / cannot be screened
+ */
+const classifyScreeningFlagsWithLLM = async (flagTexts) => {
+  const key = process.env.AZURE_OPENAI_API_KEY;
+  const endpoint = (process.env.AZURE_OPENAI_ENDPOINT || "").replace(/\/+$/, "");
+  const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_NAME || "gpt-4o";
+  const apiVersion = process.env.AZURE_OPENAI_API_VERSION || "2024-02-15-preview";
+
+  if (!key || !endpoint) return null;
+
+  const entries = Object.entries(flagTexts).filter(([, v]) => v && v !== "Not available");
+  if (entries.length === 0) return null;
+
+  const list = entries.map(([k, v]) => `- ${k}: ${v}`).join("\n");
+
+  try {
+    const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
+    const res = await axios.post(
+      url,
+      {
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a classifier for law school application screening results. " +
+              "For each screening rule result text, output ONLY one of: green, red, or yellow. " +
+              "green = candidate meets/passes the rule. " +
+              "red = candidate does not meet/fails the rule (e.g. below required years, below GPA threshold, missing documents). " +
+              "yellow = rule was skipped, not applicable, or cannot be screened. " +
+              "Return ONLY a valid JSON object mapping each rule name to its color. No markdown, no explanation.",
+          },
+          {
+            role: "user",
+            content: `Classify each of these screening rule results:\n${list}`,
+          },
+        ],
+        temperature: 0,
+        max_tokens: 200,
+      },
+      {
+        headers: { "api-key": key, "Content-Type": "application/json" },
+        timeout: 15000,
+      }
+    );
+
+    const content = res.data?.choices?.[0]?.message?.content || "";
+    const cleaned = content.replace(/```json\s*/gi, "").replace(/```/g, "").trim();
+    const parsed = JSON.parse(cleaned);
+
+    // Validate — only accept green/red/yellow values
+    const result = {};
+    for (const [k] of entries) {
+      const c = String(parsed[k] || "").toLowerCase().trim();
+      result[k] = ["green", "red", "yellow"].includes(c) ? c : "yellow";
+    }
+    return result;
+  } catch (err) {
+    console.error("LLM flag classification failed:", err.message);
+    return null;
+  }
 };
 
 /**
@@ -663,6 +894,37 @@ const extractExecutionOutput = (entry) => {
   }
 
   return null;
+};
+
+const extractResultsFromAudit = (auditData) => {
+  const result = {};
+  const entries = normalizeAuditData(auditData);
+
+  for (const entry of entries) {
+    console.log("=== extractResultsFromAudit node ===", getAuditEntryNodeName(entry));
+    const outputs = extractExecutionOutput(entry);
+    if (!outputs) continue;
+
+    if (Array.isArray(outputs)) {
+      for (const output of outputs) {
+        if (output?.variable_name && output?.value !== undefined) {
+          result[output.variable_name] = output.value;
+          // Also index by display_name so mergeWorkflowOutputs can find it
+          if (output.display_name) {
+            result[output.display_name] = output.value;
+          }
+        }
+      }
+    } else if (typeof outputs === "object") {
+      for (const [key, value] of Object.entries(outputs)) {
+        if (value !== undefined) {
+          result[key] = value;
+        }
+      }
+    }
+  }
+
+  return result;
 };
 
 /**
@@ -786,10 +1048,23 @@ const pollAuditUntilDone = async (jobExecutionId) => {
   const workflowObj = await getV2WorkflowObject(WORKFLOW_ID_PRIMARY).catch(() => null);
   const agent6OutputMap = resolveNodeOutputsByDisplayName(workflowObj, "Agent 6");
   const docScreeningOutputMap = resolveNodeOutputsByDisplayName(workflowObj, "Document Screening");
+  const updateCompletenessOutputMap = resolveNodeOutputsByDisplayName(workflowObj, "update case document complteness check");
+  const updateScreeningOutputMap = resolveNodeOutputsByDisplayName(workflowObj, "document screening for update case");
+  const agent8OutputMap = resolveNodeOutputsByDisplayName(workflowObj, "agent 8 update");
+
+  console.log("=== OUTPUT MAPS ===", {
+    agent6Keys: Object.keys(agent6OutputMap || {}),
+    docScreeningKeys: Object.keys(docScreeningOutputMap || {}),
+    updateCompletenessKeys: Object.keys(updateCompletenessOutputMap || {}),
+    updateScreeningKeys: Object.keys(updateScreeningOutputMap || {}),
+    agent8Keys: Object.keys(agent8OutputMap || {}),
+  });
 
   let agent6Flags = null;
   let docScreeningFlags = null;
+  let agent8Flags = null;
   const summaryFields = {};
+  let partialResult = {};
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     // ── 1. Check terminal status ──────────────────────────────────────────
@@ -803,7 +1078,8 @@ const pollAuditUntilDone = async (jobExecutionId) => {
 
     if (currentStatus === "COMPLETED") {
       const resultPayload = await getJobResult(jobExecutionId);
-      return { status: "COMPLETED", result: toKeyedResult(resultPayload) };
+      const combined = toKeyedResult(resultPayload);
+      return { status: "COMPLETED", result: { ...combined, ...mergeWorkflowOutputs(combined) } };
     }
 
     if (
@@ -818,27 +1094,132 @@ const pollAuditUntilDone = async (jobExecutionId) => {
     try {
       const auditData = await getJobAudit(jobExecutionId);
       const entries = normalizeAuditData(auditData);
+      partialResult = { ...partialResult, ...extractResultsFromAudit(auditData) };
 
       for (const entry of entries) {
         const nodeName = getAuditEntryNodeName(entry);
+        console.log("=== AUDIT NODE FOUND ===", nodeName);
         const output = extractExecutionOutput(entry);
         if (!output) continue;
 
         if (!agent6Flags && AGENT6_NAME_TOKENS.some((t) => nodeName.includes(t))) {
-          agent6Flags = buildFlagsFromOutput(output, agent6OutputMap, AGENT6_LABEL_MAP);
-          extractAgent6SummaryFields(output, agent6OutputMap, summaryFields);
+          console.log("=== MATCHED AGENT6 NODE ===", nodeName);
+          const isUpdateNode = nodeName.includes("update case");
+          const outputMapToUse = isUpdateNode ? updateCompletenessOutputMap : agent6OutputMap;
+          console.log("=== USING OUTPUT MAP ===", isUpdateNode ? "update" : "new", "keys:", Object.keys(outputMapToUse || {}));
+          if (!outputMapToUse || Object.keys(outputMapToUse).length === 0) {
+            console.log("=== OUTPUT MAP EMPTY, BUILDING FROM RAW OUTPUT ===");
+            const flags = {};
+            if (Array.isArray(output)) {
+              for (const item of output) {
+                if (!item || typeof item !== "object") continue;
+                const displayName = item.display_name || item.variable_name || "";
+                const uiLabel = AGENT6_LABEL_MAP[displayName];
+                if (!uiLabel) continue;
+                const textValue = toCleanText(item.value, "Not available");
+                flags[uiLabel] = toUiFlagValue(textValue);
+              }
+            }
+            if (Object.keys(flags).length > 0) {
+              agent6Flags = flags;
+              console.log("=== AGENT6 FLAGS FROM RAW ===", agent6Flags);
+            }
+          } else {
+            agent6Flags = buildFlagsFromOutput(output, outputMapToUse, AGENT6_LABEL_MAP);
+            console.log("=== AGENT6 FLAGS ===", agent6Flags);
+          }
+          extractAgent6SummaryFields(output, outputMapToUse, summaryFields);
         }
 
         if (
           !docScreeningFlags &&
           DOC_SCREENING_NAME_TOKENS.some((t) => nodeName.includes(t))
         ) {
-          docScreeningFlags = buildFlagsFromOutput(
-            output,
-            docScreeningOutputMap,
-            DOC_SCREENING_LABEL_MAP
-          );
-          extractDocScreeningSummaryFields(output, docScreeningOutputMap, summaryFields);
+          console.log("=== MATCHED DOC SCREENING NODE ===", nodeName);
+          const isUpdateNode = nodeName.includes("update case");
+          const outputMapToUse = isUpdateNode ? updateScreeningOutputMap : docScreeningOutputMap;
+          console.log("=== USING SCREENING MAP ===", isUpdateNode ? "update" : "new", "keys:", Object.keys(outputMapToUse || {}));
+          if (!outputMapToUse || Object.keys(outputMapToUse).length === 0) {
+            console.log("=== SCREENING MAP EMPTY, BUILDING FROM RAW OUTPUT ===");
+            const flags = {};
+            const flagColors = {};
+
+            if (Array.isArray(output)) {
+              // First pass: collect _result text values
+              for (const item of output) {
+                if (!item || typeof item !== "object") continue;
+                const displayName = item.display_name || item.variable_name || "";
+                if (!displayName.endsWith("_result")) continue;
+                const uiLabel = DOC_SCREENING_LABEL_MAP[displayName];
+                if (!uiLabel) continue;
+                flags[uiLabel] = toCleanText(item.value, "Not available");
+              }
+
+              // Second pass: collect _flag color values
+              for (const item of output) {
+                if (!item || typeof item !== "object") continue;
+                const displayName = item.display_name || item.variable_name || "";
+                if (!displayName.endsWith("_flag")) continue;
+                const uiLabel = DOC_SCREENING_FLAG_MAP[displayName];
+                if (!uiLabel) continue;
+                flagColors[uiLabel] = String(item.value || "").toLowerCase().trim();
+              }
+            }
+
+            // Apply icons based on flag colors
+            for (const [label, text] of Object.entries(flags)) {
+              const color = flagColors[label] || "";
+              let icon = "—";
+              if (color === "green") icon = "✓";
+              else if (color === "red") icon = "✗";
+              else if (color === "skipped") icon = "—";
+              else if (isSkipSignal(text)) icon = "—";
+              else if (isFailSignal(text)) icon = "✗";
+              else if (text !== "Not available") icon = "✓";
+              flags[label] = `${text} ${icon}`;
+            }
+
+            if (Object.keys(flags).length > 0) {
+              docScreeningFlags = flags;
+              console.log("=== DOC SCREENING FLAGS FROM RAW ===", docScreeningFlags);
+            }
+          } else {
+            docScreeningFlags = buildFlagsFromOutput(output, outputMapToUse, DOC_SCREENING_LABEL_MAP);
+            console.log("=== DOC SCREENING FLAGS ===", docScreeningFlags);
+          }
+          extractDocScreeningSummaryFields(output, outputMapToUse, summaryFields);
+        }
+
+        if (
+          !agent8Flags &&
+          AGENT8_NAME_TOKENS.some((t) => nodeName.includes(t))
+        ) {
+          const agent8Output = extractExecutionOutput(entry);
+          if (agent8Output && Array.isArray(agent8Output)) {
+            for (const item of agent8Output) {
+              if (item?.variable_name && item?.value !== undefined) {
+                partialResult[item.variable_name] = item.value;
+                if (item.display_name) {
+                  partialResult[item.display_name] = item.value;
+                }
+              }
+            }
+            agent8Flags = true;
+          }
+        }
+
+        if (MERGE_NODE_TOKENS.some((t) => nodeName.includes(t))) {
+          const mergeOutput = extractExecutionOutput(entry);
+          if (mergeOutput && Array.isArray(mergeOutput)) {
+            for (const item of mergeOutput) {
+              if (item?.variable_name && item?.value !== undefined) {
+                partialResult[item.variable_name] = item.value;
+                if (item.display_name) {
+                  partialResult[item.display_name] = item.value;
+                }
+              }
+            }
+          }
         }
       }
     } catch {
@@ -846,7 +1227,10 @@ const pollAuditUntilDone = async (jobExecutionId) => {
     }
 
     // ── 3. Once both evaluation nodes have output, the job is parked ──────
-    if (agent6Flags && docScreeningFlags) {
+    if (
+      (agent6Flags && docScreeningFlags) ||
+      (agent6Flags && agent8Flags)
+    ) {
       return {
         status: "REVIEW_READY",
         result: {
@@ -859,7 +1243,7 @@ const pollAuditUntilDone = async (jobExecutionId) => {
 
     // ── 4. FAILED/CANCELLED but we have some partial data – stop gracefully
     if (["FAILED", "CANCELLED"].includes(currentStatus)) {
-      return { status: currentStatus, result: {} };
+      return { status: "COMPLETED", result: { ...partialResult, ...mergeWorkflowOutputs(partialResult) } };
     }
 
     await sleep(intervalMs);
@@ -888,6 +1272,7 @@ const isFinalizedDecision = (value) => {
 const resolveCaseStatus = (job = {}) => {
   return (
     // Prefer merged output field (from mergeWorkflowOutputs)
+    job.merged_case_status ||
     job.case_status ||
     // Check raw display_name from new case path
     job["Case Status"] ||
@@ -899,16 +1284,16 @@ const resolveCaseStatus = (job = {}) => {
   );
 };
 
+// BEFORE
 const resolveDecision = (job = {}) => {
   return (
-    // Prefer merged output fields (from mergeWorkflowOutputs)
+    job.merged_final_decision ||
     job.final_decision ||
+    job.merged_application_status ||
     job.decision ||
     job.application_status ||
-    // Fallback to workflow output keys for new case path
     job.workflow_output_p1e47k0wq ||
     job.workflow_output_i7abcyo03 ||
-    // Fallback for update case path
     job.decision_up ||
     job.application_status_up ||
     job.offPlatformDecision ||
@@ -918,6 +1303,7 @@ const resolveDecision = (job = {}) => {
 
 const resolveApplicantName = (job = {}) => {
   return (
+    job.merged_candidate_full_name ||
     job.candidate_full_name ||
     job["Candidate Full Name"] ||
     job.candidate_full_name_up ||
@@ -927,30 +1313,29 @@ const resolveApplicantName = (job = {}) => {
   );
 };
 
+// AFTER
 const toInboxCase = (job) => ({
   student_id: String(job.studentId || ""),
   applicant_name: resolveApplicantName(job),
   request_type: job.request_type || "New",
   case_status: resolveCaseStatus(job),
-  application_status:
-    job.status === "HITL_PENDING" || job.status === "REVIEW_READY"
-      ? "Pending Human Review"
-      : job.status === "COMPLETED" || job.status === "IN PROGRESS"
-        ? resolveDecision(job)
-        : "Under Review",
+  application_status: (() => {
+    const finalizedStatuses = ["selected", "rejected", "waitlisted", "incomplete application", "deny"];
+    const appStatus = String(job.application_status || "").toLowerCase();
+    if (finalizedStatuses.includes(appStatus)) return resolveDecision(job);
+    return job.status === "COMPLETED" ||
+      job.status === "HITL_PENDING" ||
+      job.status === "REVIEW_READY" ||
+      job.status === "IN PROGRESS"
+      ? resolveDecision(job)
+      : "Under Review";
+  })(),
   attachments: job.attachments || job.fileName || "Application file",
-  is_human_review_ready:
-    Boolean(job.isOffPlatformReview) ||
-    job.status === "HITL_PENDING" ||
-    job.status === "REVIEW_READY" ||
-    normalizeActions(job.available_actions).length > 0,
-  // Surface the HITL thread id (== OPUS execution id) so the FE can navigate
-  // straight to /hitl/:threadId for off-platform reviews instead of the
-  // legacy /case/:studentId screening detail page.
-  thread_id: Boolean(job.isOffPlatformReview) ? String(job.jobId || "") : null,
-  is_off_platform_review: Boolean(job.isOffPlatformReview),
-  hitl_workflow_name: job.hitlWorkflowName || null,
-  hitl_node_name: job.hitlWorkflowMeta?.review_node?.name || null,
+  is_human_review_ready: false,
+  thread_id: null,
+  is_off_platform_review: false,
+  hitl_workflow_name: null,
+  hitl_node_name: null,
   submitted_at: job.submittedAt || null,
 });
 
@@ -966,9 +1351,9 @@ const resolveScreeningStatus = (job = {}) => {
   return "Not Started";
 };
 
+// AFTER
 const toCaseInfo = (job) => {
   const applicantName = resolveApplicantName(job);
-  // Dynamically find documents from the documents folder for this applicant
   const dynamicAttachments = findDocumentsForApplicant(applicantName);
   
   return {
@@ -976,28 +1361,26 @@ const toCaseInfo = (job) => {
     applicant_name: applicantName,
     request_type: job.request_type || "New",
     screening_status: resolveScreeningStatus(job),
-    // For HITL cases and audit-ready cases, the application's lifecycle is
-    // "Pending Human Review" — not the agent's recommendation.
-    // Showing Agent 6's recommendation here confuses the reviewer
-    // ("Status: Process" reads like the case is already moving forward).
-    // Use resolveDecision only once the workflow completes.
     application_status:
-      job.status === "HITL_PENDING" || job.status === "REVIEW_READY"
-        ? "Pending Human Review"
-        : job.status === "COMPLETED" || job.status === "IN PROGRESS"
-          ? resolveDecision(job)
-          : "Under Review",
-    // Use dynamically detected documents from folder, then fall back to job data
+      job.status === "COMPLETED" ||
+      job.status === "HITL_PENDING" ||
+      job.status === "REVIEW_READY" ||
+      job.status === "IN PROGRESS"
+        ? resolveDecision(job)
+        : "Under Review",
     attachments: dynamicAttachments || job.attachments || job.fileName || "Application file",
   };
 };
 
-const toScreeningResult = (job) => {
-  // Apply mergeWorkflowOutputs on-the-fly to ensure normalized fields are available
-  // This handles jobs that were synced before the display_name extraction fix
-  const mergedJob = { ...job, ...mergeWorkflowOutputs(job) };
-  
+const toScreeningResult = async (job) => {
+  const merged = mergeWorkflowOutputs(job);
+  const mergedJob = { ...job, ...merged };
+
+
+  console.log("toScreeningResult merged keys:", Object.keys(mergedJob).filter(k => k.startsWith("merged_")));
+
   const deficiencyList = parseList(
+    merged.merged_final_deficiency_list ||
     mergedJob.final_deficiency_list || 
     mergedJob.deficiency_list || 
     mergedJob["final deficiency list"] ||
@@ -1036,80 +1419,76 @@ const toScreeningResult = (job) => {
     resolvedAvailableActions = ["approve", "reject", "waitlist", "raise_insufficiency"];
   }
 
-  // Build completeness flags from normalized merged fields, display names, and legacy fallbacks
+  // Build completeness flags
+  const toCompletenessFlag = (value) => {
+    const v = String(value || "").toLowerCase().trim();
+    if (v.includes("present") || v.includes("green") || v.includes("yes")) return `${value} ✓`;
+    if (v.includes("missing") || v.includes("red") || v.includes("no") || v.includes("not found") || v.includes("absent")) return `${value} ✗`;
+    return `${value} —`;
+  };
+
   const completenessFlags =
     mergedJob.completeness_flags && typeof mergedJob.completeness_flags === "object"
       ? mergedJob.completeness_flags
       : {
-          "ID and Personal Details": toUiFlagValue(
-            mergedJob.id_proof_check || 
-            mergedJob["id proof and personal details check"] ||
-            mergedJob.id_proof_check_up ||
-            mergedJob.workflow_output_4f6zv6ezv
-          ),
-          "Signature": toUiFlagValue(
-            mergedJob.signature_check || 
-            mergedJob["signature check"] ||
-            mergedJob.signature_check_up
-          ),
-          "Grade Sheets and Certificates": toUiFlagValue(
-            mergedJob.grade_sheets_check || 
-            mergedJob["grade sheets check"] ||
-            mergedJob.grade_sheets_check_up ||
-            mergedJob.workflow_output_ga0k4n971
-          ),
-          "LOR Documents": toUiFlagValue(
-            mergedJob.lor_check || 
-            mergedJob["lor check"] ||
-            mergedJob.lor_check_up ||
-            mergedJob.workflow_output_9eyscad0a
-          ),
-          "Work Experience": toUiFlagValue(
-            mergedJob.work_experience_check || 
-            mergedJob["work experience check"] ||
-            mergedJob.work_experience_check_up ||
-            mergedJob.workflow_output_pook82hn8
-          ),
+          "ID and Personal Details": toCompletenessFlag(mergedJob.merged_id_proof_check || mergedJob.id_proof_check || mergedJob["id proof and personal details check"] || mergedJob.id_proof_check_up || mergedJob["id_proof_check_up"] || mergedJob.workflow_output_4f6zv6ezv || "Not available"),
+          "Signature": toCompletenessFlag(mergedJob.merged_signature_check || mergedJob.signature_check || mergedJob["signature check"] || mergedJob.signature_check_up || mergedJob["signature_check_up"] || "Not available"),
+          "Grade Sheets and Certificates": toCompletenessFlag(mergedJob.merged_grade_sheets_check || mergedJob.grade_sheets_check || mergedJob["grade sheets check"] || mergedJob.grade_sheets_check_up || mergedJob["grade_sheets_check_up"] || mergedJob.workflow_output_ga0k4n971 || "Not available"),
+          "LOR Documents": toCompletenessFlag(mergedJob.merged_lor_check || mergedJob.lor_check || mergedJob["lor check"] || mergedJob.lor_check_up || mergedJob["lor_check_up"] || mergedJob.workflow_output_9eyscad0a || "Not available"),
+          "Work Experience": toCompletenessFlag(mergedJob.merged_work_experience_check || mergedJob.work_experience_check || mergedJob["work experience check"] || mergedJob.work_experience_check_up || mergedJob["work_experience_check_up"] || mergedJob.workflow_output_pook82hn8 || "Not available"),
         };
 
-  // Build screening flags from normalized merged fields, display names, and legacy fallbacks
+  // Gather result texts for LLM classification
+  const screeningResultTexts = {
+    "GPA Rule": mergedJob.merged_gpa_result || mergedJob.gpa_result || mergedJob["gpa result"] || mergedJob.gpa_result_up || mergedJob["gpa_result_up"] || mergedJob.gpa_flag || mergedJob["gpa flag"] || mergedJob.gpa_flag_up || mergedJob["gpa_flag_up"] || mergedJob.workflow_output_023wrk0az || "Not available",
+    "Work Experience Rule": mergedJob.merged_work_experience_result || mergedJob.work_experience_result || mergedJob["work experience result"] || mergedJob.work_experience_result_up || mergedJob["work_experience_result_up"] || mergedJob.work_experience_flag || mergedJob["work experience flag"] || mergedJob.work_experience_flag_up || mergedJob["work_experience_flag_up"] || mergedJob.workflow_output_z9kai3q6o || "Not available",
+    "LOR Institution Rule": mergedJob.merged_lor_university_result || mergedJob.lor_university_result || mergedJob["lor_university_result"] || mergedJob.lor_university_result_up || mergedJob["lor_university_result_up"] || mergedJob.lor_university_flag || mergedJob["lor university flag"] || mergedJob.lor_university_flag_up || mergedJob["lor_university_flag_up"] || mergedJob.workflow_output_cvrqcxwzu || "Not available",
+    "LOR Recency Rule": mergedJob.merged_lor_date_result || mergedJob.lor_date_result || mergedJob["lor_date_result"] || mergedJob.lor_date_result_up || mergedJob["lor_date_result_up"] || mergedJob.lor_date_flag || mergedJob["lor date flag"] || mergedJob.lor_date_flag_up || mergedJob["lor_date_flag_up"] || mergedJob.workflow_output_pexqqlsbt || "Not available",
+  };
+
+  // Use LLM to classify colors; fall back to flag fields if LLM unavailable
+  const llmColors = await classifyScreeningFlagsWithLLM(screeningResultTexts);
+
+  const getFlagColor = (ruleName, flagFieldValue, resultText = "") => {
+    if (llmColors && llmColors[ruleName]) return llmColors[ruleName];
+    const v = String(flagFieldValue || "").toLowerCase().trim();
+    if (v === "green") return "green";
+    if (v === "red") return "red";
+    const text = String(resultText || "").toLowerCase();
+    if (!text || text === "not available") return "yellow";
+    if (isSkipSignal(text)) return "yellow";
+    if (isFailSignal(text)) return "red";
+    return "green";
+  };
+
+  const toFlagIcon = (color) => {
+    if (color === "green") return "✓";
+    if (color === "red") return "✗";
+    return "—";
+  };
+
+  const normalizeExistingScreeningFlags = (existingFlags = {}) => {
+    const out = {};
+    for (const [ruleName, rawValue] of Object.entries(existingFlags)) {
+      const text = String(rawValue || "Not available").trim();
+      if (/[✓✗—]$/.test(text)) {
+        out[ruleName] = text;
+        continue;
+      }
+      const icon = toFlagIcon(getFlagColor(ruleName, "", text));
+      out[ruleName] = `${text} ${icon}`;
+    }
+    return out;
+  };
+
   const screeningFlags =
     mergedJob.screening_flags && typeof mergedJob.screening_flags === "object"
-      ? mergedJob.screening_flags
+      ? normalizeExistingScreeningFlags(mergedJob.screening_flags)
       : {
-          "GPA Rule": toUiFlagValue(
-            mergedJob.gpa_result || 
-            mergedJob["gpa result"] ||
-            mergedJob.gpa_flag || 
-            mergedJob["gpa flag"] ||
-            mergedJob.gpa_result_up || 
-            mergedJob.gpa_flag_up ||
-            mergedJob.workflow_output_023wrk0az
-          ),
-          "Work Experience Rule": toUiFlagValue(
-            mergedJob.work_experience_flag || 
-            mergedJob["work experience flag"] ||
-            mergedJob.work_experience_flag_up ||
-            mergedJob.workflow_output_z9kai3q6o
-          ),
-          "LOR Institution Rule": toUiFlagValue(
-            mergedJob.lor_university_result || 
-            mergedJob["lor_university_result"] ||
-            mergedJob.lor_university_flag || 
-            mergedJob["lor university flag"] ||
-            mergedJob.lor_university_result_up || 
-            mergedJob.lor_university_flag_up ||
-            mergedJob.workflow_output_cvrqcxwzu
-          ),
-          "LOR Recency Rule": toUiFlagValue(
-            mergedJob.lor_date_result || 
-            mergedJob["lor_date_result"] ||
-            mergedJob.lor_date_flag || 
-            mergedJob["lor date flag"] ||
-            mergedJob.lor_date_result_up || 
-            mergedJob.lor_date_flag_up ||
-            mergedJob.workflow_output_pexqqlsbt
-          ),
+          "GPA Rule": `${screeningResultTexts["GPA Rule"]} ${toFlagIcon(getFlagColor("GPA Rule", mergedJob.gpa_flag || mergedJob["gpa flag"] || mergedJob.gpa_flag_up, screeningResultTexts["GPA Rule"]))}`,
+          "Work Experience Rule": `${screeningResultTexts["Work Experience Rule"]} ${toFlagIcon(getFlagColor("Work Experience Rule", mergedJob.work_experience_flag || mergedJob["work experience flag"] || mergedJob.work_experience_flag_up, screeningResultTexts["Work Experience Rule"]))}`,
+          "LOR Institution Rule": `${screeningResultTexts["LOR Institution Rule"]} ${toFlagIcon(getFlagColor("LOR Institution Rule", mergedJob.lor_university_flag || mergedJob["lor university flag"] || mergedJob.lor_university_flag_up, screeningResultTexts["LOR Institution Rule"]))}`,
+          "LOR Recency Rule": `${screeningResultTexts["LOR Recency Rule"]} ${toFlagIcon(getFlagColor("LOR Recency Rule", mergedJob.lor_date_flag || mergedJob["lor date flag"] || mergedJob.lor_date_flag_up, screeningResultTexts["LOR Recency Rule"]))}`,
         };
 
   return {
@@ -1122,6 +1501,7 @@ const toScreeningResult = (job) => {
     // (populated from DS's output during HITL dispatch) before falling back to
     // post-workflow output keys, update case fields, or a status-based default.
     flagged_or_verified:
+      merged.merged_flagged_or_verified ||
       mergedJob.flagged_or_verified ||
       mergedJob["flagged/verified"] ||
       mergedJob.workflow_output_izvdziwj0 ||
@@ -1133,7 +1513,14 @@ const toScreeningResult = (job) => {
     completeness_flags: completenessFlags,
     screening_flags: screeningFlags,
     deficiency_list: deficiencyList,
-    reason: mergedJob.reason || mergedJob.final_reason || mergedJob["decision of agent"] || mergedJob.final_reason_up || deficiencyList.join("; ") || "No deficiencies.",
+    reason:
+      merged.merged_final_reason ||
+      mergedJob.reason ||
+      mergedJob.final_reason ||
+      mergedJob["decision of agent"] ||
+      mergedJob.final_reason_up ||
+      deficiencyList.join("; ") ||
+      "No deficiencies.",
     available_actions: resolvedAvailableActions,
     expected_output_schema: mergedJob.hitlExpectedOutputSchema?.schema || null,
     hitl_status: mergedJob.hitlStatus || null,
@@ -1158,9 +1545,9 @@ const hasScreeningData = (job = {}) => {
   return Object.keys(job).some((key) => key.startsWith("workflow_output_"));
 };
 
-const buildRealtimeCasePayload = (job) => ({
+const buildRealtimeCasePayload = async (job) => ({
   case_info: toCaseInfo(job),
-  screening_result: hasScreeningData(job) ? toScreeningResult(job) : null,
+  screening_result: hasScreeningData(job) ? await toScreeningResult(job) : null,
 });
 
 const toHumanDecisionResult = (decisionAction, existingJob = {}) => {
@@ -1569,9 +1956,17 @@ const watchJobCompletion = (jobExecutionId) => {
         // job's current status so the candidate profile page shows the real
         // data instead of "Not available".  The job remains "IN PROGRESS"
         // until a human decision arrives via the HITL webhook.
-        updateJobResult(String(jobExecutionId), result);
+        updateJobResult(String(jobExecutionId), {
+          ...result,
+          ...mergeWorkflowOutputs(result),
+        });
       } else {
-        updateJobResult(String(jobExecutionId), { status, ...result });
+        const mergedOutputs = mergeWorkflowOutputs(result);
+        updateJobResult(String(jobExecutionId), {
+          status: "COMPLETED",
+          ...result,
+          ...mergedOutputs,
+        });
       }
     } catch (error) {
       updateJobResult(String(jobExecutionId), {
@@ -1827,14 +2222,18 @@ export const getLatestScreeningResultController = async (req, res) => {
         if (statusPayload?.status === "COMPLETED") {
           const resultPayload = await getJobResult(String(job.jobId));
           const keyedResult = toKeyedResult(resultPayload);
-          job = updateJobResult(String(job.jobId), { status: "COMPLETED", ...keyedResult });
+          job = updateJobResult(String(job.jobId), {
+            status: "COMPLETED",
+            ...keyedResult,
+            ...mergeWorkflowOutputs(keyedResult),
+          });
         }
       } catch {
         // Status check failed; serve stale data gracefully.
       }
     }
 
-    return res.status(200).json(buildRealtimeCasePayload(job));
+    return res.status(200).json(await buildRealtimeCasePayload(job));
   } catch (error) {
     return res.status(500).json({ detail: error.message || "Failed to fetch screening result" });
   }
@@ -1861,20 +2260,20 @@ export const streamCaseUpdatesController = async (req, res) => {
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
   };
 
-  const sendSnapshot = () => {
+  const sendSnapshot = async () => {
     const latestJob = findLatestJobByStudentId(studentId);
     if (!latestJob) {
       writeEvent("snapshot", { student_id: studentId, case_info: null, screening_result: null });
       return;
     }
 
-    writeEvent("snapshot", buildRealtimeCasePayload(latestJob));
+    writeEvent("snapshot", await buildRealtimeCasePayload(latestJob));
   };
 
   sendSnapshot();
 
   const events = getJobEvents();
-  const onJobUpdate = (eventPayload) => {
+  const onJobUpdate = async (eventPayload) => {
     const updatedJob = eventPayload?.job;
     if (!updatedJob) {
       return;
@@ -1886,7 +2285,7 @@ export const streamCaseUpdatesController = async (req, res) => {
 
     writeEvent("job-update", {
       type: eventPayload?.type || "updated",
-      ...buildRealtimeCasePayload(updatedJob),
+      ...await buildRealtimeCasePayload(updatedJob),
     });
   };
 
@@ -1910,7 +2309,7 @@ export const triggerScreeningController = async (req, res) => {
 
     if (activeScreeningByStudent.has(studentId)) {
       const inFlight = await activeScreeningByStudent.get(studentId);
-      return res.status(200).json(toScreeningResult(inFlight));
+      return res.status(200).json(await toScreeningResult(inFlight));
     }
 
     const runPromise = (async () => {
@@ -1921,7 +2320,7 @@ export const triggerScreeningController = async (req, res) => {
     const result = await runPromise;
     activeScreeningByStudent.delete(studentId);
 
-    return res.status(200).json(toScreeningResult(result));
+    return res.status(200).json(await toScreeningResult(result));
   } catch (error) {
     activeScreeningByStudent.delete(studentId);
     return res.status(500).json({ detail: error.message || "Screening failed" });
@@ -2316,6 +2715,7 @@ export const submitHumanDecisionController = async (req, res) => {
               workflow_output_p1e47k0wq: mapped.application_status,
               workflow_output_i7abcyo03: mapped.application_status,
               available_actions: [],
+              status: "COMPLETED",
             }
           : {}),
         hitlStatus,
@@ -2363,6 +2763,7 @@ export const submitHumanDecisionController = async (req, res) => {
       workflow_output_p1e47k0wq: mapped.application_status,
       workflow_output_i7abcyo03: mapped.application_status,
       available_actions: [],
+      status: "COMPLETED",
       offPlatformDecisionSubmittedAt: new Date().toISOString(),
     });
 

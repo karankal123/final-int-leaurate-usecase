@@ -9,12 +9,15 @@ export const syncStatus = async () => {
    await handleSecondaryJobs(jobs)
 }
 
+const isOpusNumericExecutionId = (value) => /^\d+$/.test(String(value || "").trim())
+
 const handlePrimaryJobs = async (jobs) => {
   
     const inprogressJobs = jobs.filter(
       (j) =>
         !['COMPLETED', 'FAILED', 'CANCELLED', 'NOT_STARTED'].includes(j.status) &&
-        !String(j.jobId || '').startsWith('-')
+        !String(j.jobId || '').startsWith('-') &&
+        isOpusNumericExecutionId(j.jobId)
     )
     
     for(let job of inprogressJobs){
@@ -40,10 +43,14 @@ const handlePrimaryJobs = async (jobs) => {
         } catch (err) {
           console.error(`Status check failed for job ${job.jobId}: ${err.message}`)
           // If this job has been failing across syncs, mark it FAILED to stop retrying
-          if (job._syncFailCount >= 5) {
-            await updateJobStatus(job.jobId, 'FAILED').catch(() => {})
-          } else {
-            await updateJobResult(job.jobId, { _syncFailCount: (job._syncFailCount || 0) + 1 }).catch(() => {})
+          try {
+            if (job._syncFailCount >= 5) {
+              updateJobStatus(job.jobId, 'FAILED')
+            } else {
+              updateJobResult(job.jobId, { _syncFailCount: (job._syncFailCount || 0) + 1 })
+            }
+          } catch (storeErr) {
+            console.error(`Failed to persist sync error state for job ${job.jobId}: ${storeErr.message}`)
           }
         }
     }
@@ -51,7 +58,12 @@ const handlePrimaryJobs = async (jobs) => {
 
 const handleSecondaryJobs = async (jobs) => {
   
-    const inprogressJobs = jobs.filter(j => j.secondaryStatus && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(j.secondaryStatus))
+    const inprogressJobs = jobs.filter(
+      (j) =>
+        j.secondaryStatus &&
+        !['COMPLETED', 'FAILED', 'CANCELLED'].includes(j.secondaryStatus) &&
+        isOpusNumericExecutionId(j.secondaryJobId)
+    )
     
     for(let job of inprogressJobs){
         console.log(`Checking status for secondary job ${job.secondaryJobId}`)

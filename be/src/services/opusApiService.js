@@ -1,4 +1,5 @@
 import axios from "axios";
+import https from "node:https";
 import { logInfo, logError } from "../utils/logger.js";
 import dotenv from "dotenv";
 
@@ -7,6 +8,8 @@ dotenv.config();
 const baseURL = process.env.OPUS_BASE_URL;
 const apiKey = process.env.OPUS_API_KEY;
 const DEFAULT_WORKFLOW_ID = process.env.WORKFLOW_ID_PRIMARY;
+const allowSelfSignedCerts =
+  String(process.env.OPUS_ALLOW_SELF_SIGNED_CERTS || "").toLowerCase() === "true";
 
 const opusClient = axios.create({
   baseURL,
@@ -14,6 +17,11 @@ const opusClient = axios.create({
     "x-service-key": apiKey,
     "Content-Type": "application/json",
   },
+  ...(allowSelfSignedCerts
+    ? {
+        httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+      }
+    : {}),
 });
 
 export const getWorkflowSchema = async (
@@ -141,10 +149,18 @@ export const getPresignedUrl = async (fileExtension = "pdf") => {
     );
     return res.data;
   } catch (error) {
+    const raw = error.response?.data || error.message;
+    const rawText = typeof raw === "string" ? raw : JSON.stringify(raw);
     logError("Failed to get presigned url", {
-      error: error.response?.data || error.message,
+      error: raw,
     });
-    throw new Error("Status check failed");
+    if (rawText.includes("Corporate Internet policy violation")) {
+      throw new Error("OPUS request blocked by corporate internet policy. Ask network team to allow OPUS_BASE_URL.");
+    }
+    if (rawText.includes("self-signed certificate")) {
+      throw new Error("TLS validation failed for OPUS endpoint. Set OPUS_ALLOW_SELF_SIGNED_CERTS=true for this environment.");
+    }
+    throw new Error("Presigned URL retrieval failed");
   }
 };
 

@@ -2,9 +2,9 @@
  * AgentResultPanel — renders completeness_flags + screening_flags in two columns
  */
 
-/* Strip trailing ✓ or ✗ characters from the API value text */
+/* Strip trailing ✓, ✗, or — characters from the API value text */
 function cleanText(value) {
-  return value?.replace(/\s*[✓✗]\s*$/, '').trim() || '';
+  return value?.replace(/\s*[✓✗—]\s*$/, '').trim() || '';
 }
 
 function PassIcon() {
@@ -34,11 +34,12 @@ function SkipIcon() {
 function FlagItem({ label, value }) {
   const pass = value?.includes('✓');
   const fail = value?.includes('✗');
+  const skip = value?.includes('—') && !pass && !fail;
   const clean = cleanText(value);
 
-  let rowHoverClass = 'hover:bg-amber-50/50';
-  let iconBgClass = 'bg-amber-100';
-  let textClass = 'text-[#D97706]';
+  let rowHoverClass = 'hover:bg-gray-50/50';
+  let iconBgClass = 'bg-gray-100';
+  let textClass = 'text-[#6B7280]';
   let iconNode = <SkipIcon />;
 
   if (pass) {
@@ -51,6 +52,11 @@ function FlagItem({ label, value }) {
     iconBgClass = 'bg-red-100';
     textClass = 'text-[#DC2626]';
     iconNode = <FailIcon />;
+  } else if (skip) {
+    rowHoverClass = 'hover:bg-amber-50/50';
+    iconBgClass = 'bg-amber-100';
+    textClass = 'text-[#D97706]';
+    iconNode = <SkipIcon />;
   }
 
   return (
@@ -225,12 +231,9 @@ function AuditTrailSection({ auditTrail, result }) {
 
 export default function AgentResultPanel({ result, auditTrail }) {
   return (
-    <>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <FlagSection title="Document Completeness Check" flags={result.completeness_flags} />
-        <FlagSection title="Screening Rules Evaluation"  flags={result.screening_flags} />
-      </div>
-      <AuditTrailSection auditTrail={auditTrail} result={result} />
-    </>
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <FlagSection title="Document Completeness Check" flags={result.completeness_flags} />
+      <FlagSection title="Screening Rules Evaluation"  flags={result.screening_flags} />
+    </div>
   );
 }
