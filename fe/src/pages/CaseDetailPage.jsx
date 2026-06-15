@@ -47,7 +47,7 @@ function getBannerIcon(decision, caseStatus) {
 
 /* ── Decision Summary Card ── */
 function DecisionSummaryCard({ result }) {
-  const agentDecision = result.agent_decision || result.decision || 'Under Review';
+  const agentDecision = result?.is_processing ? 'Under Review' : 'Incomplete Application';
 
   return (
     <div className="mt-4 bg-white rounded-xl border border-[#E2E8F0] shadow-sm overflow-hidden">
@@ -448,6 +448,14 @@ export default function CaseDetailPage() {
   const handlePreview = (doc) => {
     const url = resolveAttachmentPreviewUrl(doc);
     if (url) {
+      const fileName = String(doc?.name || url).toLowerCase();
+      const isPdf = fileName.endsWith('.pdf');
+
+      if (!isPdf) {
+        window.open(url, '_blank', 'noopener,noreferrer');
+        return;
+      }
+
       setPreviewUrl(url);
       setPreviewTitle(doc.name || 'Document');
     }

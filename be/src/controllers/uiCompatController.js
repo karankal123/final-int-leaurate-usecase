@@ -116,16 +116,37 @@ const resolveAttachmentUrl = (job = {}) => {
   return "";
 };
 
-const resolveAllDocumentsForApplicant = (applicantName = "") => {
+const resolveAllDocumentsForApplicant = (applicantName = "", studentId = "") => {
   const files = getLocalDocumentNames();
   if (files.length === 0) return [];
 
   const normalizedName = String(applicantName || "").trim().toLowerCase();
-  if (!normalizedName) return [];
+  const normalizedStudentId = String(studentId || "").trim().toLowerCase();
+  if (!normalizedName && !normalizedStudentId) return [];
 
-  const token = normalizedName.replace(/\.pdf$/i, "");
-  const matches = files.filter((file) => file.toLowerCase().includes(token));
-  return matches.map((name) => ({ name, url: toDocumentUrl(name) }));
+  const nameTokens = normalizedName
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .split(/\s+/)
+    .filter((token) => token.length >= 2);
+
+  const scored = files
+    .map((name) => {
+      const lower = name.toLowerCase();
+      let score = 0;
+
+      if (normalizedStudentId && lower.includes(normalizedStudentId)) score += 5;
+      if (normalizedName && lower.includes(normalizedName)) score += 4;
+
+      for (const token of nameTokens) {
+        if (lower.includes(token)) score += 1;
+      }
+
+      return { name, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+
+  return scored.map(({ name }) => ({ name, url: toDocumentUrl(name) }));
 };
 const activeScreeningByStudent = new Map();
 const activeJobWatchers = new Map();
@@ -1420,27 +1441,18 @@ const resolveRegularWorkflowApplicationStatus = (job = {}) => {
 
 const deriveCaseStatusFromApplicationStatus = (applicationStatus) => {
   const normalized = String(applicationStatus || "").trim().toLowerCase();
-  if (["selected", "rejected", "deny"].includes(normalized)) {
+  if (
+    ["approve", "selected", "rejected", "deny"].some((token) =>
+      normalized.includes(token)
+    )
+  ) {
     return "Closed";
   }
   return "Open";
 };
 
-const resolveRegularWorkflowCaseStatus = (job = {}) => {
-  const explicitFinalCaseStatus = String(job.human_final_case_status || "").trim();
-  if (explicitFinalCaseStatus) {
-    return explicitFinalCaseStatus;
-  }
-
-  const explicitCaseStatus = String(job.case_status || "").trim();
-  if (explicitCaseStatus && isFinalizedDecision(resolveDecision(job))) {
-    return explicitCaseStatus;
-  }
-
-  return deriveCaseStatusFromApplicationStatus(
-    resolveRegularWorkflowApplicationStatus(job)
-  );
-};
+const resolveRegularWorkflowCaseStatus = (job = {}) =>
+  deriveCaseStatusFromApplicationStatus(resolveRegularWorkflowApplicationStatus(job));
 
 const resolveApplicantName = (job = {}) => {
   return (
@@ -1459,15 +1471,17 @@ const toInboxCase = (job) => ({
   student_id: String(job.studentId || ""),
   applicant_name: resolveApplicantName(job),
   request_type: job.request_type || "New",
-  case_status: Boolean(job.isOffPlatformReview)
-    ? resolveCaseStatus(job)
-    : resolveRegularWorkflowCaseStatus(job),
   application_status: Boolean(job.isOffPlatformReview)
     ? resolveDecision(job)
     : resolveRegularWorkflowApplicationStatus(job),
+  case_status: deriveCaseStatusFromApplicationStatus(
+    Boolean(job.isOffPlatformReview)
+      ? resolveDecision(job)
+      : resolveRegularWorkflowApplicationStatus(job)
+  ),
   attachments: job.attachments || job.fileName || "Application file",
   attachment_url: resolveAttachmentUrl(job),
-  attachment_urls: resolveAllDocumentsForApplicant(resolveApplicantName(job)),
+  attachment_urls: resolveAllDocumentsForApplicant(resolveApplicantName(job), job.studentId),
   is_human_review_ready: false,
   thread_id: null,
   is_off_platform_review: false,
@@ -1492,7 +1506,7 @@ const resolveScreeningStatus = (job = {}) => {
 const toCaseInfo = (job) => {
   const applicantName = resolveApplicantName(job);
   const dynamicAttachments = findDocumentsForApplicant(applicantName);
-  const allAttachmentUrls = resolveAllDocumentsForApplicant(applicantName);
+  const allAttachmentUrls = resolveAllDocumentsForApplicant(applicantName, job.studentId);
   const attachmentUrl = resolveAttachmentUrl(job);
   const applicationStatus = Boolean(job.isOffPlatformReview)
     ? resolveDecision(job)
@@ -1504,9 +1518,7 @@ const toCaseInfo = (job) => {
     request_type: job.request_type || "New",
     screening_status: resolveScreeningStatus(job),
     application_status: applicationStatus,
-    case_status: Boolean(job.isOffPlatformReview)
-      ? resolveCaseStatus(job)
-      : deriveCaseStatusFromApplicationStatus(applicationStatus),
+    case_status: deriveCaseStatusFromApplicationStatus(applicationStatus),
     attachments: dynamicAttachments || job.attachments || job.fileName || "Application file",
     attachment_url: attachmentUrl,
     attachment_urls:
@@ -1524,9 +1536,7 @@ const toScreeningResult = async (job) => {
   const applicationStatus = Boolean(mergedJob.isOffPlatformReview)
     ? resolveApplicationStatusValue(mergedJob) || resolveDecision(mergedJob)
     : resolveRegularWorkflowApplicationStatus(mergedJob);
-  const caseStatus = Boolean(mergedJob.isOffPlatformReview)
-    ? resolveCaseStatus(mergedJob)
-    : deriveCaseStatusFromApplicationStatus(applicationStatus);
+  const caseStatus = deriveCaseStatusFromApplicationStatus(applicationStatus);
   const finalDecision = mergedJob.human_final_decision || resolveDecision(mergedJob);
   const agentDecision = Boolean(mergedJob.isOffPlatformReview)
     ? resolveDecision(mergedJob)
