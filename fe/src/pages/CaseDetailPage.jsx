@@ -47,6 +47,8 @@ function getBannerIcon(decision, caseStatus) {
 
 /* ── Decision Summary Card ── */
 function DecisionSummaryCard({ result }) {
+  const agentDecision = result.agent_decision || result.decision || 'Under Review';
+
   return (
     <div className="mt-4 bg-white rounded-xl border border-[#E2E8F0] shadow-sm overflow-hidden">
       <div className="px-5 py-3 bg-[#002855] flex items-center gap-2">
@@ -56,7 +58,7 @@ function DecisionSummaryCard({ result }) {
       <div className="p-5 grid grid-cols-2 sm:grid-cols-3 gap-5">
         <div className="bg-[#F5F6F8] rounded-lg p-3">
           <p className="text-xs text-[#6B7280] mb-2 font-medium">Agent Decision</p>
-          <StatusBadge value={result.decision} kind="decision" />
+          <StatusBadge value={agentDecision} kind="decision" />
         </div>
         <div className="bg-[#F5F6F8] rounded-lg p-3">
           <p className="text-xs text-[#6B7280] mb-2 font-medium">Deficiency Status</p>
@@ -91,6 +93,7 @@ export default function CaseDetailPage() {
   const [decisionLoading,   setDecisionLoading]   = useState(null); // 'approve' | 'raise' | null
   const [finalResult,       setFinalResult]       = useState(null);
   const [decisionError,     setDecisionError]     = useState(null);
+  const [elapsedTime,       setElapsedTime]       = useState(null);
 
   /* ── Preview Modal State ── */
   const [previewUrl, setPreviewUrl] = useState(null);
@@ -135,6 +138,9 @@ export default function CaseDetailPage() {
 
     if (incomingScreening) {
       setScreeningResult(incomingScreening);
+      if (incomingScreening.execution_time) {
+        setElapsedTime(incomingScreening.execution_time);
+      }
       const processing = Boolean(incomingScreening.is_processing);
       const hasHumanActions = Array.isArray(incomingScreening.available_actions) && incomingScreening.available_actions.length > 0;
       setScreeningLoading(processing);
@@ -149,15 +155,22 @@ export default function CaseDetailPage() {
         incomingCaseInfo?.application_status ||
         incomingScreening?.application_status ||
         incomingScreening?.decision;
+      const resolvedCaseStatus =
+        incomingCaseInfo?.case_status ||
+        incomingScreening?.case_status;
+      const resolvedFinalDecision =
+        incomingScreening?.final_decision ||
+        incomingScreening?.decision ||
+        resolvedAppStatus;
 
       const alreadyFinalized = isFinalizedStatus(resolvedAppStatus);
 
       if (!hasHumanActions && alreadyFinalized) {
         // Case is done — show the final banner.
         setFinalResult({
-          decision: incomingScreening.decision,
+          decision: resolvedFinalDecision,
           application_status: resolvedAppStatus,
-          case_status: incomingScreening.case_status,
+          case_status: resolvedCaseStatus,
           thread_id: incomingScreening.thread_id,
           student_id: incomingScreening.student_id,
         });
@@ -176,55 +189,86 @@ export default function CaseDetailPage() {
 
   /* ── On mount: load case info, then decide based on mode ── */
   useEffect(() => {
+    let stale = false;
+
     async function init() {
       setLoadingCase(true);
       setCaseError(null);
       setScreeningError(null);
 
-      // Single fetch — one Promise.all, one screeningPayload reference used
-      // throughout init(). No duplicate call, no shadowed variable.
       let caseData;
-      let screeningPayload;
       try {
-        [caseData, screeningPayload] = await Promise.all([
-          getCaseStatus(studentId),
-          getCaseScreening(studentId).catch(() => null),
-        ]);
-
+        caseData = await getCaseStatus(studentId);
+        if (stale) return;
         setCaseInfo(caseData);
+      } catch (err) {
+        if (stale) return;
+        setCaseError(err?.response?.data?.detail || err.message || 'Failed to load case.');
+        setLoadingCase(false);
+        return;
+      }
+
+      // View mode reads cached screening details only; it never auto-triggers
+      // screening calls.
+      if (mode === 'view') {
+        const cached = sessionStorage.getItem(`screening_${studentId}`);
+        if (cached) {
+          try {
+            const { screeningResult: sr, finalResult: fr, elapsedTime: et } = JSON.parse(cached);
+            if (stale) return;
+
+            if (sr) {
+              setScreeningResult(sr);
+              if (sr.thread_id) {
+                await loadJobAudit(sr.thread_id);
+              }
+            }
+            if (fr) setFinalResult(fr);
+            if (et) setElapsedTime(et);
+          } catch (err) {
+            console.error('Failed to parse cached screening result', err);
+          }
+        }
+        setLoadingCase(false);
+        return;
+      }
+
+      // For screen mode (or direct open without explicit mode), hydrate from
+      // latest backend snapshot.
+      let screeningPayload = null;
+      try {
+        screeningPayload = await getCaseScreening(studentId);
+      } catch {
+        screeningPayload = null;
+      }
+
+      if (!stale && screeningPayload) {
         await hydrateFromPayload(screeningPayload);
 
-        // Set finalResult for any already-completed/finalized case.
-        // This runs for BOTH view and screen mode — the early return below
-        // for view mode comes AFTER this block so view mode always gets it.
         const sr = screeningPayload?.screening_result;
         const actionsEmpty = !Array.isArray(sr?.available_actions) || sr.available_actions.length === 0;
         const isCompleted = String(sr?.job_status || '').toUpperCase() === 'COMPLETED';
         const isFinalized = isFinalizedStatus(sr?.decision || caseData?.application_status);
         if (sr && actionsEmpty && (isCompleted || isFinalized) && !sr.is_processing) {
           setFinalResult({
-            decision: sr.decision,
-            application_status: caseData?.application_status || sr.decision,
-            case_status: sr.case_status,
+            decision: sr.final_decision || sr.decision,
+            application_status: caseData?.application_status || sr.application_status || sr.decision,
+            case_status: caseData?.case_status || sr.case_status,
             thread_id: sr.thread_id,
             student_id: sr.student_id,
           });
         }
-      } catch (err) {
-        setCaseError(err?.response?.data?.detail || err.message || 'Failed to load case.');
-        setLoadingCase(false);
-        return;
       }
+
+      if (stale) return;
       setLoadingCase(false);
 
-      // view mode (or undefined): data already loaded and finalResult already
-      // set above — nothing more to do.
+      // screen mode: guard against re-triggering an already active/done job.
+      // Reuse screeningPayload already fetched above — no second network call.
       if (mode !== 'screen') {
         return;
       }
 
-      // screen mode: guard against re-triggering an already active/done job.
-      // Reuse screeningPayload already fetched above — no second network call.
       const currentScreening = screeningPayload?.screening_result;
       const hasExistingThread = Boolean(currentScreening?.thread_id);
       const hasExistingActions = Array.isArray(currentScreening?.available_actions) && currentScreening.available_actions.length > 0;
@@ -248,20 +292,33 @@ export default function CaseDetailPage() {
       setFinalResult(null);
       try {
         const result = await triggerScreening(studentId);
+        if (stale) return;
         setScreeningResult(result);
+        if (result?.execution_time) {
+          setElapsedTime(result.execution_time);
+        }
         if (!result?.is_processing) {
           await loadJobAudit(result.thread_id);
         }
       } catch (err) {
+        if (stale) return;
         setScreeningError(err?.response?.data?.detail || err.message || 'Screening failed.');
       } finally {
+        if (stale) return;
         setScreeningLoading(false);
       }
     }
     init();
+    return () => {
+      stale = true;
+    };
   }, [studentId, mode, hydrateFromPayload, loadJobAudit]);
 
   useEffect(() => {
+    if (mode === 'view') {
+      return () => {};
+    }
+
     const stream = openCaseUpdatesStream(studentId, {
       onSnapshot: (payload) => {
         hydrateFromPayload(payload).catch((err) => {
@@ -281,18 +338,38 @@ export default function CaseDetailPage() {
     return () => {
       stream.close();
     };
-  }, [studentId, hydrateFromPayload]);
+  }, [studentId, mode, hydrateFromPayload]);
+
+  useEffect(() => {
+    if (!studentId) return;
+
+    if (!screeningResult && !finalResult && !elapsedTime) {
+      return;
+    }
+
+    const cachePayload = {
+      screeningResult,
+      finalResult,
+      elapsedTime,
+    };
+    sessionStorage.setItem(`screening_${studentId}`, JSON.stringify(cachePayload));
+  }, [studentId, screeningResult, finalResult, elapsedTime]);
 
   /* ── Re-run screening (clears cache and re-triggers) ── */
   async function handleTriggerScreening() {
+    sessionStorage.removeItem(`screening_${studentId}`);
     setScreeningLoading(true);
     setScreeningError(null);
     setScreeningResult(null);
     setAuditTrail([]);
     setFinalResult(null);
+    setElapsedTime(null);
     try {
       const result = await triggerScreening(studentId);
       setScreeningResult(result);
+      if (result?.execution_time) {
+        setElapsedTime(result.execution_time);
+      }
       if (!result?.is_processing) {
         await loadJobAudit(result.thread_id);
       }
@@ -320,6 +397,7 @@ export default function CaseDetailPage() {
           ? {
               ...prev,
               application_status: result.application_status || prev.application_status,
+              case_status: result.case_status || prev.case_status,
             }
           : prev
       );
@@ -327,7 +405,8 @@ export default function CaseDetailPage() {
         prev
           ? {
               ...prev,
-              decision: result.decision || prev.decision,
+              final_decision: result.decision || prev.final_decision,
+              application_status: result.application_status || prev.application_status,
               case_status: result.case_status || prev.case_status,
               available_actions: [],
             }
@@ -394,6 +473,40 @@ export default function CaseDetailPage() {
       setRenameLoading(false);
     }
   }
+
+  const renderTopStatusBadges = () => {
+    if (screeningLoading) {
+      return <StatusBadge value="Under Review" kind="screening" />;
+    }
+
+    if (screeningResult) {
+      const displayApplicationStatus =
+        finalResult?.application_status ||
+        caseInfo?.application_status ||
+        screeningResult.application_status ||
+        'Under Review';
+      const displayCaseStatus =
+        finalResult?.case_status ||
+        caseInfo?.case_status ||
+        screeningResult.case_status ||
+        'Open';
+
+      return (
+        <>
+          <StatusBadge value={displayCaseStatus} kind="application" />
+          <StatusBadge value={displayApplicationStatus} kind="application" />
+        </>
+      );
+    }
+
+    return (
+      <>
+        <StatusBadge value={caseInfo.request_type} kind="request" />
+        <StatusBadge value={caseInfo.screening_status} kind="screening" />
+        <StatusBadge value={caseInfo.application_status} kind="application" />
+      </>
+    );
+  };
 
   /* ── Render ── */
   return (
@@ -464,18 +577,20 @@ export default function CaseDetailPage() {
 
             {/* Card body */}
             <div className="px-6 py-4">
-              <div className="flex flex-wrap gap-2">
-                <StatusBadge value={caseInfo.application_status} kind="application" />
-              </div>
+              <div className="flex flex-wrap gap-2">{renderTopStatusBadges()}</div>
 
               {/* Attachments */}
-              {caseInfo.attachments && (
+              {(caseInfo.attachment_urls?.length > 0 || caseInfo.attachments) && (
                 <div className="mt-4 pt-4 border-t border-[#F1F5F9]">
                   <p className="text-xs font-semibold text-[#6B7280] uppercase tracking-widest mb-2">
                     Attached Documents
                   </p>
                   <AttachmentChipsComponent
-                    attachmentUrls={parseAttachmentString(caseInfo.attachments)}
+                    attachmentUrls={
+                      caseInfo.attachment_urls?.length > 0
+                        ? caseInfo.attachment_urls
+                        : parseAttachmentString(caseInfo.attachments)
+                    }
                     onPreview={handlePreview}
                   />
                 </div>
@@ -558,7 +673,7 @@ export default function CaseDetailPage() {
                   <ErrorBanner title="Decision submission failed" message={decisionError} />
                 )}
                 <HumanReviewPanel
-                  agentDecision={screeningResult.decision}
+                  agentDecision={screeningResult.agent_decision || screeningResult.decision}
                   availableActions={screeningResult.available_actions}
                   expectedOutputSchema={screeningResult.expected_output_schema}
                   loading={decisionLoading}

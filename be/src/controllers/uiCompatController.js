@@ -49,6 +49,24 @@ const __dirname = path.dirname(__filename);
 const excelFilePath = path.join(__dirname, "../data/Applicant_Case_Tracker.xlsx");
 const documentsPath = path.join(__dirname, "../../documents");
 
+const toDocumentUrl = (fileName) => `/documents/${encodeURIComponent(fileName)}`;
+
+const getLocalDocumentNames = () => {
+  if (!fs.existsSync(documentsPath)) return [];
+  return fs
+    .readdirSync(documentsPath)
+    .filter((name) => {
+      const fullPath = path.join(documentsPath, name);
+      return fs.statSync(fullPath).isFile() && String(name).toLowerCase() !== "readme.md";
+    });
+};
+
+const splitAttachmentNames = (attachments) =>
+  String(attachments || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
 /**
  * Find documents in the documents folder that match the applicant name
  * @param {string} applicantName - The applicant's name
@@ -56,8 +74,8 @@ const documentsPath = path.join(__dirname, "../../documents");
  */
 function findDocumentsForApplicant(applicantName) {
   try {
-    if (!fs.existsSync(documentsPath)) return "";
-    const files = fs.readdirSync(documentsPath);
+    const files = getLocalDocumentNames();
+    if (files.length === 0) return "";
     const nameParts = applicantName.toLowerCase().split(/\s+/);
     const firstName = nameParts[0] || "";
     const lastName = nameParts[nameParts.length - 1] || "";
@@ -77,6 +95,38 @@ function findDocumentsForApplicant(applicantName) {
     return "";
   }
 }
+
+const resolveAttachmentUrl = (job = {}) => {
+  const directUrl = String(job.attachment_url || "").trim();
+  if (directUrl) return directUrl;
+
+  const uploadedUrl = String(job.fileUrl || "").trim();
+  if (uploadedUrl) return uploadedUrl;
+
+  const firstNamedAttachment = splitAttachmentNames(job.attachments)[0] || "";
+  if (firstNamedAttachment) {
+    return toDocumentUrl(firstNamedAttachment);
+  }
+
+  const fileName = String(job.fileName || "").trim();
+  if (fileName && fileName.toLowerCase() !== "application file") {
+    return toDocumentUrl(fileName);
+  }
+
+  return "";
+};
+
+const resolveAllDocumentsForApplicant = (applicantName = "") => {
+  const files = getLocalDocumentNames();
+  if (files.length === 0) return [];
+
+  const normalizedName = String(applicantName || "").trim().toLowerCase();
+  if (!normalizedName) return [];
+
+  const token = normalizedName.replace(/\.pdf$/i, "");
+  const matches = files.filter((file) => file.toLowerCase().includes(token));
+  return matches.map((name) => ({ name, url: toDocumentUrl(name) }));
+};
 const activeScreeningByStudent = new Map();
 const activeJobWatchers = new Map();
 
@@ -1287,17 +1337,108 @@ const resolveCaseStatus = (job = {}) => {
 // BEFORE
 const resolveDecision = (job = {}) => {
   return (
+    job.human_final_decision ||
     job.merged_final_decision ||
     job.final_decision ||
-    job.merged_application_status ||
     job.decision ||
-    job.application_status ||
     job.workflow_output_p1e47k0wq ||
     job.workflow_output_i7abcyo03 ||
+    job.merged_application_status ||
+    job.application_status ||
     job.decision_up ||
     job.application_status_up ||
     job.offPlatformDecision ||
     "Pending Review"
+  );
+};
+
+const resolveWorkflowApplicationStatusValue = (job = {}) => {
+  return (
+    job.merged_application_status ||
+    job.workflow_output_p1e47k0wq ||
+    job.workflow_output_i7abcyo03 ||
+    job.application_status_up ||
+    ""
+  );
+};
+
+const resolveApplicationStatusValue = (job = {}) => {
+  return (
+    job.human_final_application_status ||
+    job.application_status ||
+    resolveWorkflowApplicationStatusValue(job) ||
+    ""
+  );
+};
+
+const resolveAgentDecision = (job = {}) => {
+  const workflowApplicationStatus = String(
+    resolveWorkflowApplicationStatusValue(job) || ""
+  ).trim();
+  if (workflowApplicationStatus) {
+    return workflowApplicationStatus;
+  }
+
+  const status = String(job.status || "").toUpperCase();
+  if (["NOT_STARTED", "IN PROGRESS", "IN_PROGRESS", "PENDING"].includes(status)) {
+    return "Under Review";
+  }
+
+  return (
+    job.merged_final_decision ||
+    job.final_decision ||
+    job.decision_up ||
+    job.offPlatformDecision ||
+    "Under Review"
+  );
+};
+
+const resolveRegularWorkflowApplicationStatus = (job = {}) => {
+  const explicitFinalApplicationStatus = String(
+    job.human_final_application_status || ""
+  ).trim();
+  if (explicitFinalApplicationStatus) {
+    return explicitFinalApplicationStatus;
+  }
+
+  const status = String(job.status || "").toUpperCase();
+  if (status === "NOT_STARTED") {
+    return "Under Review";
+  }
+
+  const explicitApplicationStatus = String(resolveApplicationStatusValue(job) || "").trim();
+  if (explicitApplicationStatus && explicitApplicationStatus.toLowerCase() !== "under review") {
+    return explicitApplicationStatus;
+  }
+
+  if (["COMPLETED", "REVIEW_READY", "HITL_PENDING", "IN PROGRESS", "IN_PROGRESS"].includes(status)) {
+    return resolveAgentDecision(job);
+  }
+
+  return "Under Review";
+};
+
+const deriveCaseStatusFromApplicationStatus = (applicationStatus) => {
+  const normalized = String(applicationStatus || "").trim().toLowerCase();
+  if (["selected", "rejected", "deny"].includes(normalized)) {
+    return "Closed";
+  }
+  return "Open";
+};
+
+const resolveRegularWorkflowCaseStatus = (job = {}) => {
+  const explicitFinalCaseStatus = String(job.human_final_case_status || "").trim();
+  if (explicitFinalCaseStatus) {
+    return explicitFinalCaseStatus;
+  }
+
+  const explicitCaseStatus = String(job.case_status || "").trim();
+  if (explicitCaseStatus && isFinalizedDecision(resolveDecision(job))) {
+    return explicitCaseStatus;
+  }
+
+  return deriveCaseStatusFromApplicationStatus(
+    resolveRegularWorkflowApplicationStatus(job)
   );
 };
 
@@ -1318,19 +1459,15 @@ const toInboxCase = (job) => ({
   student_id: String(job.studentId || ""),
   applicant_name: resolveApplicantName(job),
   request_type: job.request_type || "New",
-  case_status: resolveCaseStatus(job),
-  application_status: (() => {
-    const finalizedStatuses = ["selected", "rejected", "waitlisted", "incomplete application", "deny"];
-    const appStatus = String(job.application_status || "").toLowerCase();
-    if (finalizedStatuses.includes(appStatus)) return resolveDecision(job);
-    return job.status === "COMPLETED" ||
-      job.status === "HITL_PENDING" ||
-      job.status === "REVIEW_READY" ||
-      job.status === "IN PROGRESS"
-      ? resolveDecision(job)
-      : "Under Review";
-  })(),
+  case_status: Boolean(job.isOffPlatformReview)
+    ? resolveCaseStatus(job)
+    : resolveRegularWorkflowCaseStatus(job),
+  application_status: Boolean(job.isOffPlatformReview)
+    ? resolveDecision(job)
+    : resolveRegularWorkflowApplicationStatus(job),
   attachments: job.attachments || job.fileName || "Application file",
+  attachment_url: resolveAttachmentUrl(job),
+  attachment_urls: resolveAllDocumentsForApplicant(resolveApplicantName(job)),
   is_human_review_ready: false,
   thread_id: null,
   is_off_platform_review: false,
@@ -1355,26 +1492,45 @@ const resolveScreeningStatus = (job = {}) => {
 const toCaseInfo = (job) => {
   const applicantName = resolveApplicantName(job);
   const dynamicAttachments = findDocumentsForApplicant(applicantName);
+  const allAttachmentUrls = resolveAllDocumentsForApplicant(applicantName);
+  const attachmentUrl = resolveAttachmentUrl(job);
+  const applicationStatus = Boolean(job.isOffPlatformReview)
+    ? resolveDecision(job)
+    : resolveRegularWorkflowApplicationStatus(job);
   
   return {
     student_id: String(job.studentId || ""),
     applicant_name: applicantName,
     request_type: job.request_type || "New",
     screening_status: resolveScreeningStatus(job),
-    application_status:
-      job.status === "COMPLETED" ||
-      job.status === "HITL_PENDING" ||
-      job.status === "REVIEW_READY" ||
-      job.status === "IN PROGRESS"
-        ? resolveDecision(job)
-        : "Under Review",
+    application_status: applicationStatus,
+    case_status: Boolean(job.isOffPlatformReview)
+      ? resolveCaseStatus(job)
+      : deriveCaseStatusFromApplicationStatus(applicationStatus),
     attachments: dynamicAttachments || job.attachments || job.fileName || "Application file",
+    attachment_url: attachmentUrl,
+    attachment_urls:
+      allAttachmentUrls.length > 0
+        ? allAttachmentUrls
+        : attachmentUrl
+          ? [{ name: decodeURIComponent(String(attachmentUrl).split("/").pop() || "document"), url: attachmentUrl }]
+          : [],
   };
 };
 
 const toScreeningResult = async (job) => {
   const merged = mergeWorkflowOutputs(job);
   const mergedJob = { ...job, ...merged };
+  const applicationStatus = Boolean(mergedJob.isOffPlatformReview)
+    ? resolveApplicationStatusValue(mergedJob) || resolveDecision(mergedJob)
+    : resolveRegularWorkflowApplicationStatus(mergedJob);
+  const caseStatus = Boolean(mergedJob.isOffPlatformReview)
+    ? resolveCaseStatus(mergedJob)
+    : deriveCaseStatusFromApplicationStatus(applicationStatus);
+  const finalDecision = mergedJob.human_final_decision || resolveDecision(mergedJob);
+  const agentDecision = Boolean(mergedJob.isOffPlatformReview)
+    ? resolveDecision(mergedJob)
+    : resolveAgentDecision(mergedJob);
 
 
   console.log("toScreeningResult merged keys:", Object.keys(mergedJob).filter(k => k.startsWith("merged_")));
@@ -1389,7 +1545,7 @@ const toScreeningResult = async (job) => {
   );
   const isCompleted = mergedJob.status === "COMPLETED";
   const availableActions = normalizeActions(mergedJob.available_actions);
-  const decisionLower = String(resolveDecision(mergedJob) || "").toLowerCase();
+  const decisionLower = String(agentDecision || "").toLowerCase();
   const pendingHumanReviewSignals = new Set([
     "pending review",
     "under review",
@@ -1403,7 +1559,7 @@ const toScreeningResult = async (job) => {
     (String(mergedJob.hitlStatus || "").toUpperCase() === "PENDING" ||
       String(mergedJob.status || "").toUpperCase() === "HITL_PENDING" ||
       pendingHumanReviewSignals.has(decisionLower));
-  const finalized = isFinalizedDecision(resolveDecision(mergedJob)) && availableActions.length === 0;
+  const finalized = isFinalizedDecision(applicationStatus) && availableActions.length === 0;
   const isProcessing =
     ["IN PROGRESS", "PENDING", "IN_PROGRESS"].includes(mergedJob.status) &&
     availableActions.length === 0;
@@ -1496,7 +1652,10 @@ const toScreeningResult = async (job) => {
     student_id: String(mergedJob.studentId || ""),
     job_status: mergedJob.status || "NOT_STARTED",
     is_processing: isProcessing,
-    decision: resolveDecision(mergedJob),
+    decision: agentDecision,
+    agent_decision: isProcessing ? "Under Review" : agentDecision,
+    final_decision: finalDecision,
+    application_status: applicationStatus,
     // Prefer the explicit mergedJob.flagged_or_verified set by buildHitlTaskFromWebhook
     // (populated from DS's output during HITL dispatch) before falling back to
     // post-workflow output keys, update case fields, or a status-based default.
@@ -1509,7 +1668,7 @@ const toScreeningResult = async (job) => {
       // Fallback for update case path
       mergedJob.flagged_verified_up ||
       (isCompleted ? "Flagged" : "In Progress"),
-    case_status: resolveCaseStatus(mergedJob),
+    case_status: caseStatus,
     completeness_flags: completenessFlags,
     screening_flags: screeningFlags,
     deficiency_list: deficiencyList,
@@ -1559,7 +1718,7 @@ const toHumanDecisionResult = (decisionAction, existingJob = {}) => {
     },
     reject: {
       decision: "Deny",
-      application_status: "Rejected",
+      application_status: "Deny",
       case_status: "Closed",
     },
     waitlist: {
@@ -2712,6 +2871,9 @@ export const submitHumanDecisionController = async (req, res) => {
               decision: mapped.decision,
               application_status: mapped.application_status,
               case_status: mapped.case_status,
+              human_final_decision: mapped.decision,
+              human_final_application_status: mapped.application_status,
+              human_final_case_status: mapped.case_status,
               workflow_output_p1e47k0wq: mapped.application_status,
               workflow_output_i7abcyo03: mapped.application_status,
               available_actions: [],
@@ -2760,6 +2922,9 @@ export const submitHumanDecisionController = async (req, res) => {
       decision: mapped.decision,
       application_status: mapped.application_status,
       case_status: mapped.case_status,
+      human_final_decision: mapped.decision,
+      human_final_application_status: mapped.application_status,
+      human_final_case_status: mapped.case_status,
       workflow_output_p1e47k0wq: mapped.application_status,
       workflow_output_i7abcyo03: mapped.application_status,
       available_actions: [],

@@ -114,9 +114,7 @@ function ApplicantsTable({ cases, onOpenScreen, onOpenView, onRename, renameLoad
               const ss = c.screening_status?.toLowerCase() || '';
               const isDone =
               ss === 'completed' ||
-              ['process', 'selected', 'rejected', 'waitlisted', 'incomplete application'].includes(as);
- 
-              //const isDone = ['selected', 'rejected', 'waitlisted', 'incomplete application'].includes(as);
+              ['process', 'selected', 'rejected', 'waitlisted', 'incomplete application', 'deny'].includes(as);
               const isRenaming = renameLoadingId === c.student_id;
               const isRenamed = renamedIds?.has(c.student_id);
               return (
@@ -244,8 +242,8 @@ export default function InboxPage() {
   // the evaluation results and the human-review action box render on one
   // page (matches Karan's UX requirement: results first, action at bottom).
   // const openHitl = (c) => navigate(`/case/${c.student_id}`, { state: { mode: 'view' } });
-  const openScreen = (c) => navigate(`/case/${c.student_id}`, { state: { mode: 'screen' } });
-  const openView = (c) => navigate(`/case/${c.student_id}`, { state: { mode: 'view' } });
+  const openScreen = (c) => navigate(`/case/${c.student_id}`, { state: { mode: 'screen', attachment_url: c.attachment_url } });
+  const openView = (c) => navigate(`/case/${c.student_id}`, { state: { mode: 'view', attachment_url: c.attachment_url } });
 
   const handleRename = async (c) => {
     if (!c.applicant_name || !c.student_id) return;

@@ -12,11 +12,18 @@ const SCREENING_COLORS = {
 };
 
 const APPLICATION_COLORS = {
-  'pending':   'bg-amber-50 text-amber-700',
-  'open':      'bg-blue-50 text-[#1D4ED8]',
-  'approved':  'bg-green-50 text-[#16a34a]',
-  'rejected':  'bg-red-50 text-[#DC2626]',
-  'closed':    'bg-gray-100 text-[#6B7280]',
+  'under review':           'bg-blue-50 text-[#1D4ED8]',
+  'pending review':         'bg-amber-50 text-amber-700',
+  'pending':                'bg-amber-50 text-amber-700',
+  'open':                   'bg-blue-50 text-[#1D4ED8]',
+  'closed':                 'bg-gray-100 text-[#6B7280]',
+  'approved':               'bg-green-50 text-[#16a34a]',
+  'selected':               'bg-green-50 text-[#16a34a]',
+  'rejected':               'bg-red-50 text-[#DC2626]',
+  'deny':                   'bg-red-50 text-[#DC2626]',
+  'waitlisted':             'bg-blue-50 text-[#1D4ED8]',
+  'incomplete application': 'bg-amber-50 text-amber-700',
+  'process':                'bg-amber-50 text-amber-700',
 };
 
 const REQUEST_COLORS = {
@@ -27,6 +34,8 @@ const REQUEST_COLORS = {
 const DECISION_COLORS = {
   'selected':                 'bg-green-50 text-[#16a34a]',
   'deny':                     'bg-red-50 text-[#DC2626]',
+  'rejected':                 'bg-red-50 text-[#DC2626]',
+  'waitlisted':               'bg-blue-50 text-[#1D4ED8]',
   'pending review':           'bg-amber-50 text-amber-700',
   'incomplete application':   'bg-amber-50 text-amber-700',
 };
